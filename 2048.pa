@@ -1,0 +1,1392 @@
+/ "2048 for the PDP-8"
+/ A small  clone of the web-based game by GabrieleCirulli:
+/ https://github.com/gabrielecirulli/2048
+/ 
+/ 
+/ This version is in PDP-8 assembly language, and runs with no OS.
+/ Load the BIN papertape format file into memory, and start
+/ at address 200 octal.  
+/
+/ This code was written and tested using my Spare Time Gizmos SBC-6120,
+/ a PDP-8E compatible system using an HD6120 ("PDP-8 on a chip") CPU.
+/
+/ I believe this should run on any PDP-8.
+/ I've since verified that it runs in the SIMH PDP-8 simulator 
+/ http://simh.trailing-edge.com/
+/ To run in SIMH: (on Debian-based Linux like Ubuntu or Mint)
+/
+/ apt-get install simh
+/ $ pdp8
+/ sim> LOAD 2048.bin
+/ sim> GO 0200
+/
+/ To get a "period feel", up/down/left/right key assignments 
+/ are taken from the Lear Siegler ADM3A, and are familiar to users of vi
+/ https://en.wikipedia.org/wiki/File:KB_Terminal_ADM3A.svg
+/ Fully compatible with Teletype ASR-33
+/
+/ Licensing info:
+/ This code is placed in the public domain by Garrett Nievin
+/
+/ The functions "GetRand" and "Muy" are by Steve Gibson
+/ from his public domain program "Deep Thought"
+/ https://www.grc.com/pdp-8/deepthought-sbc.htm
+/
+/ The function "XDECPRT" is based on document "DIGITAL-8-22-U-SYM",
+/ Unsigned Decimal Print, dated June 7, 1965
+/ Modified by me to space-replace leading insignificant zeros
+/ Original code is all uppercase, my edits are lowercase
+/
+/ The function "xudprnt" is taken from document "DIGITAL-8-24-U-Sym",
+/ Unsigned Decimal Print, Double Precision, dated January 19, 1966
+/ both documents available from:
+/ http://bitsavers.informatik.uni-stuttgart.de/www.computer.museum.uq.edu.au/pdf
+/
+/ The binary produced by this program is tested with 
+/ Steve Gibson's OS/8 Multiboot Sector
+/ https://www.grc.com/pdp-8/os8-multiboot.htm
+/
+/ Fair warning - this was my "Hello world" program in PDP-8 assembly,
+/ after only recently building my SBC-6120.  Learning as I went,
+/ some sections are not pretty, elegant, or idiomatic.
+/ This program was written without reference to any other program,
+/ except for examining the original code to ascertain the probability
+/ of a random "2" or "4" cell being added.
+/
+/ Toolchain used:
+/ Assembler:
+/ "palbart" cross assembler v 2.10 on Linux
+/ http://www.pdp8online.com/ftp/software/palbart/palbart.c
+/ (not the relatively old 2.4 version that is in the Debian repo)
+/
+/ Terminal/Loader during dev:
+/ Modified version of PySerial example "Miniterm" terminal program, mods
+/ include adding a PDP-8 BIN punchtape loader which generates BTS-6120
+/ memory deposit sequences so I didn't need to use the BTS-6120 BIN loader
+/ http://pyserial.sourceforge.net/examples.html
+/
+/ Terminal:
+/ Vince Briel's PockeTerm
+/ http://www.brielcomputers.com/wordpress/?cat=25
+/
+/ Execute/debug:
+/ Spare Time Gizmos SBC-6120/FP-6120, front-panel switches and blinkenlights
+/ http://sparetimegizmos.com/Hardware/SBC6120-2.htm
+/ http://sparetimegizmos.com/Hardware/SBC6120_Front_Panel.htm
+/
+/ Future enhancement ideas:
+/ * VT-100 support
+/ * Allow for deterministic PRNG sequences - only do an initial random
+/   seed, or allow the player to input a game number, so the same game 
+/   could be replayed with different strategies.
+/   This would merely involve calling Getch vice Getche.
+/ * Allow the game to go past the 2048 tile.  This would only involve
+/   modifying the PrtCell output routine; its temp value is the limitation
+/   as the highest number which the decprt routine can currently handle
+/   is 4095 due to the twelve-bit word of the PDP-8.  Cell routines
+/   would not need to be changed; cell words contain base-two log of
+/   cell values (e.g. 0 means empty, 1 means 2, 2 = 4, 3 = 8, 4 = 16, ...)
+/
+/ 
+/
+
+*200                                / Entry point
+Main,
+            jms i   Welcome         / Print initial welcome banner
+/ This is where we restart the game
+Start,      cla                     / initialize gameboard
+            dca     Score           / clear score
+            dca     Score+1
+            jms i   ClrTab          / clear table
+            jms i   RndCell         / Add random cell
+/ The update-display-input main loop      
+KeyLoop,    jms i   RndCell         / Add random cell
+            jms i   PrtTab          / output the table to teletype
+            jms i   CheckWin        / 2048 cell (winner?)
+            jms i   SvScr           / preserve score
+            jms i   SvTab           / preserve table
+            jms i   CkGmOver        / AC = 0 means game over
+            sna                     / Is a move possible?
+            jmp     GameOver        / No, game is over
+            jms i   RstScr          / Yes, recover, restore score
+            jms i   RstTab          / Restore table
+/ Only loop back to here on invalid input            
+NewKey,     jms i   GetchE          / Get key, reseed PRNG
+            dca     MyKey           / Save key for repeated compares
+            tad     MyKey
+            / this section of code should be replaced by
+            / a jump table or something
+            tad     NH 
+            sza                     / H = left?
+            jmp     ckJ             / No, check next key
+            jms i   MLt             / Yes, try a left move
+            sza                     / Move legal?
+            jmp     CntKeyLoop      / Yes, continue
+            jmp     NewKey          / No, get another key            
+ckJ,        cla                     / Check for J key
+            tad     MyKey
+            tad     NJ 
+            sza                     / J = down?
+            jmp     ckK
+            jms i   MDn             / Yes, do an up move
+            sza                     / Move legal?
+            jmp     CntKeyLoop      / Yes, continue
+            jmp     NewKey          / No, get another key            
+ckK,        cla                     / Check for K key
+            tad     MyKey
+            tad     NK 
+            sza                     / K = up?
+            jmp     ckL
+            jms i   MUp             / Yes, do a down move
+            sza                     / Move legal?
+            jmp     CntKeyLoop      / Yes, continue
+            jmp     NewKey          / No, get another key            
+ckL,        cla                     / Check for L key
+            tad     MyKey
+            tad     NL 
+            sza                     / L = right?
+            jmp     ckN             / No, go check next key
+            jms i   MRt             / Yes, do a right move
+            sza                     / Move legal?
+            jmp     CntKeyLoop      / Yes, continue
+            jmp     NewKey          / No, get another key            
+ckN,        cla                     / Check for N key
+            tad     MyKey
+            tad     NN 
+            sza                     / N = New game?
+            jmp     ckQ             / No, check next key
+            jmp     NewGame         / Yes, Start new game
+ckQ,        cla                     / Check for Q key
+            tad     MyKey
+            tad     NQ 
+            sza                     / Q = Quit?
+            jmp     NewKey          / No, keys exhausted, get another
+            hlt                     / Halt CPU, enter front panel mode
+
+CntKeyLoop, jms i   Newline
+            jmp     KeyLoop
+
+NH,         -110                    / Negative 'H'
+NJ,         -112                    / Negative 'J'
+NK,         -113                    / Negative 'K'
+NL,         -114                    / Negative 'L'
+NN,         -116                    / Negative 'N'
+NQ,         -121                    / Negative 'Q'
+MyKey,      0                       / Last key from teletype
+
+/ Come here when no more valid moves exist
+GameOver,   jms i   (GmOvMsg)       / Print "game over" message
+CkHiScr,    cla                     / New high score?
+            tad     Score           / Compare high word
+            cia
+            tad     HiScore
+            sna                     / Is high word of score > hiscore?
+            jmp     NoHiSc          / Lower, no new hi score
+            sza
+            jmp     HiSc            / Higher, high score
+            cla                     / Equal, check low word                     
+            tad     Score+1
+            cia
+            tad     HiScore+1       / Low word of score > hiscore?
+            sna 
+NoHiSc,     jmp     NewGame         / Here on no new high score
+HiSc,       jms i   (HiScMsg)       / New high score
+            cla                     / Print message
+            tad     Score           / Copy score to hi score
+            dca     HiScore
+            tad     Score+1
+            dca     HiScore+1
+NewGame,    jms i   (KeyCont)       / hit enter to continue & seed PRNG
+            jmp     Start           / start new game
+
+
+*400
+/ New game - stub to start over
+/ Print the 4X4 game grid
+
+/ Print a cell and a tab character
+/ cell holds log2 of actual value - so cells can go above
+/ 2048 IF this routine gets updated to use a double precision
+/ temporary variable in place of pc1
+/ input: AC holds value to print
+/ output: AC is trash
+PrtCell,    0
+            sna
+            jmp     PrtEmpty        / Print zero cell
+            cia                     / pc1 = -AC = rotate count
+            dca     pc1
+            cll iac                 / Set low bit
+            ral                     / Rotate left to get 2**pc1
+            isz     pc1             / Rotate for "pc1" bits             
+            jmp     .-2
+            jms i   DecPrt          / Go print this word
+            cla
+            tad     HT
+            jms i   Putch
+            jmp i   PrtCell
+PrtEmpty,   cla
+            jms i   DecPrt
+            cla
+            tad     HT
+            jms i   Putch
+            jmp i   PrtCell
+HT,         211                     / Horizontal Tab
+pc1,        0                       / temp var
+
+/ Print one row of the table
+RowPrt,     0
+            cla
+            tad i   CPtr
+            jms     prtCell         / returns AC=0
+            tad i   CPtr
+            jms     prtCell
+            tad i   CPtr
+            jms     prtCell
+            tad i   CPtr
+            jms     prtCell
+            
+            jms i   Newline
+            jmp i   RowPrt
+
+/ Print out the current cell table
+XPrtTab,    0
+            cla
+            tad     CPtr
+            dca     XPTCPtr
+            tad     Cells
+            dca     CPtr
+            jms     RowPrt
+            jms     RowPrt
+            jms     RowPrt
+            jms     RowPrt
+            cla
+            tad     XPTCPtr
+            dca     CPtr
+            jms     XPrtScr
+            jmp i   XPrtTab         / return
+XPTCPtr,    0
+/ Print score line
+/ input: none
+/ output: AC=0
+/ Adjust to print score line to right of table to save paper?
+XPrtScr,    0
+            jms i   NewLine
+            tad     (ScrTxt)        / print "Score: " text
+            jms i   PrtWords
+            tad     (Score)         / Get addr of dword score
+            dca     .+2             / Store in calling sequence
+            jms i   UDPrnt          / go print dword score
+            0                       / arg to UDPrnt stored here
+
+            jms i   Newline
+            tad     (HiScrTxt)      / print "Hi Score: " text
+            jms i   PrtWords
+            tad     (HiScore)       / Get addr of dword score
+            dca     .+2             / Store in calling sequence
+            jms i   UDPrnt          / go print dword score
+            0                       / arg to UDPrnt stored here
+            
+            jms i   NewLine         
+            jmp i   XPrtScr
+
+ScrTxt,	    text "SCORE:    "
+HiScrTxt,   text "HI SCORE: "
+
+
+/ MemCpy 
+/ copy a block of memory
+/ From, To point to one-before blocks
+/ CellCnt holds number of words to copy
+/ I've since discovered that this is apparently not the 
+/ the canonical or idiomatic way to pass parameters
+/ to a routine.
+XMemCpy,    0
+            cla                     /
+            tad     CPtr            / save cell pointer
+            dca     STCPtr
+            tad     Ptr             / save gen pointer
+            dca     STPtr           
+            
+            tad     CellCnt         / get number of cells 
+            dca     CellLoopI       / set loop count
+            tad     From            / get addr of table - 1
+            dca     CPtr            / save to index register 1
+            tad     To              / get addr of backup table -1
+            dca     Ptr             / save to index 2
+            
+MCloop,     tad i   CPtr
+            dca i   Ptr
+            isz     CellLoopI
+            jmp     MCloop
+            
+            tad     STCPtr          / restore cell pointer
+            dca     CPtr
+            tad     STPtr           / restore gen ptr
+            dca     STPtr
+            jmp i   XMemCpy
+STCPtr,     0
+STPtr,      0    
+/ Save copy of the table
+/ input: none
+/ output: none
+*600
+/ we will store the backup table here
+BUTab,      .
+*.+20                           / reserve 20 octal words
+
+/ Save table of cells
+/ input: none
+/ output: none
+/ BUTab gets copy of Cells
+XSvTab,     0
+            cla
+            tad     Cells
+            dca     From
+            tad     BUTab
+            dca     To
+            jms i   MemCpy
+            jmp i   XSvTab
+            
+/ Restore table from saved copy
+/ input: none
+/ output: none
+/ Cells gets copy of BUTab
+XRstTab,    0
+            cla
+            tad     Cells
+            dca     To
+            tad     BUTab
+            dca     From
+            jms i   MemCpy
+            jmp i   XRstTab
+                
+          
+/ Check to see if game is over
+/ ( no valid moves remain)
+/ input: none
+/ output: AC=0 if there is no move possible (game over),
+/  AC=nonzero if there is a move
+/ ruins: score, table
+XCkGmOver,  0
+            jms i   MRt             / test move right
+            sza                     / Move okay?
+            jmp i   XCkGmOver       / Yes, return zero
+            jms i   MLt             / No, test move right
+            sza                     / Move okay?
+            jmp i   XCkGmOver       / Yes, return zero
+            jms i   MDn             / test move right
+            sza                     / Move okay?
+            jmp i   XCkGmOver       / Yes, return zero
+            jms i   MUp             / Last chance, test move right
+            jmp i   XCkGmOver       / return its value
+
+
+/ Routines to actually do moves
+/ A move comprises collapse, add, and collapse
+/ Routines, combined with a backup/restore of the table,
+/ serve both to do the actual move and to test whether a move is
+/ possible.  If just testing possibility, the score will have
+/ to be preserved externally, since the add routines update score
+SScore,     DUBL 0
+XSvScr,     0
+            cla
+            tad     Score
+            dca     SScore
+            tad     Score+1
+            dca     SScore+1
+            jmp i   XSvScr
+XRstScr,    0
+            cla
+            tad     SScore
+            dca     Score
+            tad     SScore+1
+            dca     Score+1
+            jmp i   XRstScr
+            
+
+Moved,      0                       / flag; nonzero = no cell moved
+XMLt,       0
+            cla
+            dca     Moved           / clear did-a-cell-move-flag
+            jms i   CLt             / Collapse leftwards
+            tad     Moved           / update flag
+            dca     Moved           /
+            jms i   ALt             / Add leftwards; don't care if move
+            tad     Moved
+            dca     Moved
+            jms i   CLt             / Collapse leftwards again
+            tad     Moved           / AC now zero if no move
+            jmp i   XMLt            / return zero on nomove            
+
+XMRt,       0
+            cla
+            dca     Moved
+            jms i   CRt
+            tad     Moved           / save whether a move happened
+            dca     Moved
+            jms i   ARt
+            tad     Moved
+            dca     Moved
+            jms i   CRt
+            tad     Moved            / AC now zero if no move
+            jmp i   XMRt             / return zero on nomove            
+
+XMUp,       0
+            cla
+            dca     Moved
+            jms i   CUp
+            tad     Moved           / save whether a move happened
+            dca     Moved
+            jms i   AUp
+            tad     Moved
+            dca     Moved
+            jms i   CUp
+            tad     Moved           / AC now zero if no move
+            jmp i   XMUp            / return zero on nomove            
+
+XMDn,       0
+            cla
+            dca     Moved
+            jms i   CDn
+            tad     Moved           / save whether a move happened
+            dca     Moved
+            jms i   ADn
+            tad     Moved
+            dca     Moved
+            jms i   CDn
+            tad     Moved           / AC now zero if no move
+            jmp i   XMDn            / return zero on nomove           
+
+*1000
+
+/ Routines to collapse rows (remove leading empties) in 
+/ respective directions.
+/ Input: none
+/ Output: AC = 0 if any movement occurred, else nonzero
+/ Thus a test of move validity can be done with
+/ backup, move, restore of table
+XCLt,       0
+            cla
+            tad     (LtRows)
+            jms i   CTab            / get move-OK in AC
+            jmp i   XCLt            / return same AC
+XCRt,       0
+            cla
+            tad     (RtRows)
+            jms i   CTab            / get move-OK in AC
+            jmp i   XCRt            / return same AC
+XCUp,       0
+            cla
+            tad     (UpRows)
+            jms i   CTab            / get move-OK in AC
+            jmp i   XCUp            / return same AC
+XCDn,       0 
+            cla
+            tad     (DnRows)
+            jms i   CTab            / get move-OK in AC
+            jmp i   XCDn            / return same AC
+
+/ Collapse any leading empty cells from table
+/ input: AC pointing to one before first row 
+/ of cell address pointers
+/ AC = zero if any move occurred (ccell's job)
+/ helpers: CRow, CCell
+XCTab,      0 
+            dca     CPtr
+            dca     CMoved          / zero "did anything move" flag
+///// is this the right place for this?
+            jms i   CRow
+            jms i   CRow
+            jms i   CRow
+            jms i   CRow
+            cla
+            tad     CMoved          / get flag for return value
+            jmp i   XCTab
+/ Collapse any leading empty cells from row
+/ working in direction opposite from move
+/ input: CPtr pointing to row
+/ output: Make CMoved non-zero if a move takes place
+/ CCell does that
+XCRow,      0
+            cla
+            tad     CPtr
+            dca     CR1
+                                
+            jms i   CCell           / Try to collapse 1 into 0
+            jms i   CCell           /                 2 into 1
+            jms i   CCell           /                 3 into 2
+
+            tad i   CPtr            / bump CPtr to next row
+            cla                     / and save for return val
+            tad     CPtr            
+            dca     CRRet           / CPtr on return 
+            cla                     / CCell does not always ret AC=0
+            tad     CR1
+            dca     CPtr
+            jms i   CCell           / Try to collapse 1 into 0
+            jms i   CCell           /                 2 into 1
+            cla                
+            tad     CR1
+            dca     CPtr
+            jms i   CCell           / 1 into 0, done. Kinda bubblesorty.
+            cla
+            tad     CRRet           / get ptr to next row (less 1)
+            dca     CPtr
+            jmp i   XCRow           / CPTr now points to next row
+CR1,        0                       / Pointer save
+CRRet,      0                       / Return value (next row) save
+                
+
+/ If cell is zero, move next cell into this one
+/ input: CPtr pointing to current cell
+/ output: CPtr pointing to next cell
+/ AC indeterminate
+/ do not check here for end of row
+XCCell,     0
+            cla
+            tad i   CPtr            / get addr of first cell
+            dca     CC1
+            tad     CPtr
+            dca     CCCPtr
+            tad i   CC1             / deref addr to value
+            sza                     / if zero, we can collapse; else no
+            jmp i   XCCell          / if no move, then return, CPtr OK
+            tad i   CPtr            / get addr of next cell
+            dca     CC2
+            tad i   CC2             / deref to value - also zero?
+            sna
+            jmp     CCno            / yes - no move made
+            dca i   CC1             / no; store into current cell
+            dca i   CC2             / store zero in next cell
+            iac 
+            dca     CMoved          / set cell-moved flag to nonzero
+CCno,       tad     CCCPtr
+            dca     CPtr
+            jmp i   XCCell          / return, CPtr pointing to next
+CC1,        0                       / addr of first cell
+CC2,        0                       / addr of second cell
+CCCptr,     0                       / ret val of CPtr
+
+*1200
+/ Routines to add cells
+/ Input: none
+/ Output: AC = 0 if any movement occurred, else nonzero
+/ Thus a test of move validity can be done with
+/ backup, move, restore of table
+
+XALt,       0
+            cla
+            tad     (LtRows)
+            jms i   ATab            / get move-OK in AC
+            jmp i   XALt            / return same AC
+XARt,       0
+            cla
+            tad     (RtRows)
+            jms i   ATab            / get move-OK in AC
+            jmp i   XARt            / return same AC
+XAUp,       0
+            cla
+            tad     (UpRows)
+            jms i   ATab            / get move-OK in AC
+            jmp i   XAUp            / return same AC
+XADn,       0 
+            cla
+            tad     (DnRows)
+            jms i   ATab            / get move-OK in AC
+            jmp i   XADn            / return same AC
+                
+/ Go through table and do any appropriate adds (doubles)
+XATab,      0
+            dca     CPtr
+            dca     CAdded          / clear cell-was-added flag
+            jms i   ARow
+            jms i   ARow
+            jms i   ARow
+            jms i   ARow
+            cla
+            tad     CAdded          / get flag for return value
+            jmp i   XATab
+                
+/ Add appropriately and score
+/ after add: zero second cell. Another round of collapsing
+/ will clean that up
+/ input: CPtr pointing to row
+/ output: CPtr pointing to next row
+/ output: Make CAdded non-zero if an add takes place
+/ ACell does that
+XARow,      0
+            jms i   ACell           / 1 into 0
+            jms i   ACell           / 2 into 1
+            jms i   ACell           / 3 into 2
+            tad i   CPtr            / bump CPtr to next row
+            jmp i   XARow
+
+/ If cell is zero, move next cell into this one
+/ input: CPtr pointing to current cell
+/ output: CPtr pointing to next cell
+/ AC indeterminate
+/ seems like I should be able to squeeze two or three
+/ instructions in here
+XACell,     0
+            cla
+            tad i   CPtr            / get addr of first cell
+            dca     AC1             / store in ptr 1
+            tad     CPtr            / get incremented CPtr
+            dca     ACCPtr          / save CPtr for return
+            tad i   AC1             / deref addr to value
+            sna                     / if zero, no add needed
+            jmp i   XACell          / no add, return w/AC = CPtr++
+            cla
+            tad i   CPtr            / get addr of next cell
+            dca     AC2             / save in ptr2
+            tad i   AC1             / get contents of first cell
+            cia                     / twos complement
+            tad i   AC2             / compare to value of 2nd cell
+            sza                     / next = current?
+            jmp     ACno            / no - restore CPtr and bail
+            tad i   AC2             / yes - increment value
+            iac
+            dca i   AC1             / store into current cell
+            dca i   AC2             / store zero in next cell
+            iac 
+            dca     CAdded          / set cell-added flag
+            tad i   AC1             / get new current cell value
+            jms i   DoScore         / add to score
+ACno,       cla
+            tad     ACCPtr          / restore CPtr
+            dca     CPtr
+            jmp i   XACell          / return, CPtr pointing to next
+AC1,        0                       / pointer save
+AC2,        0
+ACCptr,     0
+
+/ Update score
+/ add single-precision new cell value to double-precision 
+/ score
+/ input: AC = log2 of score increment
+/ output: AC = 0
+/ updates: score
+XDoScore,   0
+            cia                     / pc1 = -AC
+            dca     DSi             / save to loop counter
+            dca     Exp2            / zero out temp 2**n val
+            dca     Exp2+1          
+            cll cla iac             / set low bit
+DSloop,     ral                     / rotate left to get 2**pc1
+            szl                     / Carry?
+            jms     IncExp2         / yes, increment hi word of Exp2
+            isz     DSi             / no, keep going            
+            jmp     DSloop          
+            dca     Exp2+1          / Exp2 now = 2 ** (input AC)
+            cll                     / doubleword add Exp2 to Score
+            tad     Score+1         / add low words
+            tad     Exp2+1
+            dca     Score+1         / store low word
+            ral                     / rotate carry into high word
+            tad     Score           / add high words
+            tad     Exp2            / discard carry
+            dca     Score           / store high word 
+            jmp i   XDoScore
+            
+Exp2,       DUBL 0
+DSi,        0               
+IncExp2,    0
+            isz     exp2
+            cla
+            jmp i   incexp2
+
+*1400
+/ Steve's Page
+/ GetRand ----------------------------------------------------------------------
+/ By Steve "Tiberius" Gibson
+/               This is the simplest way I know of to generate highly random
+/               looking 12-bit values.  It's a Linear Congruential Pseudo Random
+/               Number Generator (LCPRNG).  Each time it's called, it evaluates
+/               the expression:  NextRand = RandSeed * 5545 + 541 (all octal)
+                
+XGetRand,   0                       / subroutine return
+            TAD     RandSeed        / get the last PRNG value
+            JMS     MUY             / multiply by the following constant:
+            5545                    / 2917 base 10 - LCPRNG multiplicand
+            TAD     CRandAdd        / sum in our LCPRNG addend
+            DCA     RandSeed        / save this for next time
+            TAD     AccumHigh       / return the HIGH 12-bits as our result
+            JMP  I  XGetRand        / return the AC to the caller
+/ MUY --------------------------------------------------------------------------
+/ By Steve "Tiberius" Gibson
+/               This is a full 12x12 multiply, needed because the HD6120 PDP-8
+/               emulation chip used by the SBC6120 inexplicably lacks the EAE
+/               "Extended Arithmetic Element" multiplier.  Annoying as this is,
+/               it does mean that these "ToggleToys" will be usable on ALL real
+/               PDP-8 systems, including those without EAE's.
+/
+/  On Entry:    AC contains Multipler & the word after the call has Multiplicand
+/    Return:    least significant 12-bits in AC, most significant in AccumHigh.
+
+MUY,        0                       / subroutine return
+            DCA     Multiplier      / save the multiplier for shifting
+            TAD     C7764           / setup our -12 loop counter
+            DCA     PhaseCount
+            DCA     AccumLow        / clear our 24-bit results accumulator
+            DCA     AccumHigh       
+
+MuyShift,   TAD     Multiplier      / get a bit from the multiplier
+            CLL RAL                 / move the high-bit into LINK
+            DCA     Multiplier      / put the updated multiplier back
+            SNL                     / we do need to add-in the multiplicand
+            JMP     Iterate         / no multiplicand add-in
+            
+            TAD  I  MUY             / add the multiplicand into accumulator
+            TAD     AccumLow        / this *may* overflow, clearing the LINK
+            DCA     AccumLow        / either way, put the updated low 12 back
+            SNL                     / if LINK is still '1', no overflow
+            ISZ     AccumHigh       / bump the high-half if we carried out
+            
+Iterate,    ISZ     PhaseCount      / see whether we've done all 12 bits
+            JMP     Shift24         / not done, so shift and iterate again
+
+            CLL CLA                 / return the lower 12-bits in AC
+            TAD     AccumLow
+            ISZ     MUY             / return to the instruction after multiplier
+            JMP  I  MUY
+            
+Shift24,    TAD     AccumLow        / get the lower 12-bit half
+            CLL RAL                 / shift it left, high bit into LINK
+            DCA     AccumLow        / put back the new low half
+            TAD     AccumHigh       / get the upper 12-bit half
+            RAL                     / shift it left, LINK into low bit
+            DCA     AccumHigh       / put back the new high half
+            JMP     MuyShift
+/------------------------ Initialized Constant Values -------------------------
+
+C0001,          0001                / constant 0001 for seed
+C0010,          0010                / constant 0010 for data field inc
+C0077,          0077                / constant 0077 for masking 6-bits of SW
+C0177,          0177                / constant 0177 for masking page bits
+C0200,          0200                / constant 0200 for RTF's ION bit
+C7764,          7764                / constant 7764 for -12 multiply counter
+
+CInstField,     0070                / GTF/RTF instruction field bitmask
+CRandAdd,       541                 / 353 base 10
+CJmpCurrentPg,  5200                / inst for jmp to current page loc 0
+CFirstDatField, CDF     10          / "change to data field 1"
+/-------------------------- Uninitialized Variables ---------------------------
+SpeedVariation, 0                   / 6-bits of switch register
+PhaseCount,     0                   / our multiplier-shift counter
+AccumLow,       0                   / low 12-bits of 12x12 mult
+AccumHigh,      0                   / high 12-bits of 12x12 mult
+Multiplier,     0                   / temp used by multiplication
+LoopField,      0                   / the memory Field while waiting
+LastSwitchReg,  0                   / the last SW Reg reading
+
+ 
+*1600
+/------------------------------------------------------------------------------
+/ DECPRT Digital-8-22-U-SYM
+/ PDP-8 UNSIGNED DECIMAL PRINT
+/ CALL WITH NUMBER TO BE TYPED IN AC
+/ RETURN TO LOCATION FOLLOWING CALLING JMS
+XDECPRT,    0
+            DCA VALUE       /SAVE INPUT
+            dca SigDigt     /clear done-leading-zeros flag
+            DCA DIGIT       /CLEAR
+            TAD CNTRZA      
+            DCA CNTRZB      /SET COUNTER TO FOUR
+            TAD ADDRZA
+            DCA ARROW       /SET TABLE POINTER
+            SKP
+            DCA VALUE       /SAVE
+            CLL
+            TAD VALUE
+ARROW,      TAD TENPWR      /SUBTRACT POWER OF TEN
+            SZL
+            ISZ DIGIT       /DEVELOP BCD DIGIT
+            SZL
+            JMP ARROW-3     /LOOP
+            CLA             /HAVE BCD DIGIT
+            TAD DIGIT       /GET DIGIT
+            sna             /Zero?
+            jmp ldspc       /Yes, check for leading zero
+nonzero,    dca SigDigt     /No, set significant-digits flag
+            tad SigDigt     /Reload char
+prtdig,     TAD K260        /MAKE IT ASCII
+prtchr,     jms i putch
+            DCA DIGIT       /CLEAR
+            ISZ ARROW       /UPDATE POINTER
+            ISZ CNTRZB      /DONE ALL FOUR?
+            JMP ARROW-1     /NO: CONTINUE
+            JMP I XDECPRT   /YES: EXIT
+ADDRZA,     TAD TENPWR
+/ ldspc gets reached if we are printing a zero, and we need
+/ to check if we need to print a space for a leading nonsignificant
+/ zero
+ldspc,      tad SigDigt     /Are we done with leading zeros?
+            sza
+            jmp prtzero     /Yes, go print the zero
+            tad ARROW       /Get ARROW inst
+            dca .+1         /Save it here to execute it
+            nop             /this will be TAD TENPWR[n]
+            iac
+            sna             /Is it the ones digit (val -1)?
+            jmp prtdig      /yes, go print the zero 
+            cla             /no, print a space
+            tad space       /load space character
+            jmp prtchr      /
+prtzero,    cla
+            jmp prtdig
+CNTRZA,     -4
+TENPWR,     -1750           /ONE THOUSAND
+            -0144           /ONE HUNDRED
+            -0012           /TEN
+onesdig,    -0001           /ONE
+K260,       260
+K60,        60
+VALUE,      0
+DIGIT,      0
+CNTRZB,     0
+SigDigt,    0
+space,      240
+
+            
+
+*2000
+
+/ input: AC = character
+/ ouput: AC = 0
+XPutch,     0       
+            tls                     / Send char to teletype
+            tsf                     / Skip next when sent
+            jmp     .-1             / Wait until prev char sent
+            cla cll                 / Clear AC to set up for next
+            jmp i   XPutch
+
+/ input: none
+/ output: AC = 0
+XNewline,   0                       / Type a CR/LF combo
+            cla cll
+            tad     CR              / Print Carriage Return
+            jms     XPutch
+            tad     LF              / print Linefeed
+            jms     XPutch          / Clears AC
+            jmp i   XNewline
+CR,         15                      / Carriage Return character
+LF,         12                      / Linefeed character
+
+
+/ Check for a win (Cell has a 2048)
+M13,        -13                     / negative log2 of 2048
+XCkWin,     0
+            cla
+            tad     CellCnt         / set loop count
+            dca     CellLoopI       /
+            tad     Cells           / get addr of table - 1
+            dca     CPtr            / save to index register
+ck2loop,    tad i   Cptr            / get cell
+            tad     M13             / subtract log2(2048)
+            sna
+            jmp i   Winner          / Got a 2048 cell
+            cla
+            isz     CellLoopI
+            jmp     ck2loop 
+            jmp i   XCkWin 
+
+K177,       177                     / 7-bit mask to lose any parity bits
+/ Get a key from the teletype
+/ This is not currently used.
+XGetch,     0                       / get key
+            ksf                     / 
+            jmp     .-1             / wait until it arrives
+            krb
+            and     K177            / lose any parity bits
+            jmp i   XGetch          / return
+
+/ Get a character from the teletype, and seed PRNG
+XGetcE,     0                       / get key and entropy
+            kcc
+            isz     RandSeed
+            cla
+            ksf
+            jmp     .-3
+            krb
+            and     K177            / lose any parity bits
+            jmp i   XGetcE
+            
+*2200
+/------------------------------------------------------------------------------
+/ Digital-8-24-U-Sym
+/PDP-8 UNSIGNED DOUBLE PRECISION DECIMAL PRINT
+/CALL WITH NUMBER TO BE TYPED IN AC
+/RETURN TO LOCATION FOLLOWING CALLING JMS
+/calling sequence: jms udprnt   /subroutine called
+/                   hi addr     /address of high order word
+/                   return      /return with ac and l clear
+xudprnt,    0
+            cla cll
+            tad i   xudprnt     /pick up address of high-order word
+            dca     udget
+            tad i   udget       /pick up both words for use in subroutine
+            dca     udhigh
+            isz     udget
+            tad i   udget
+            dca     udlow
+            tad     udloop      /initialize digit counter for "8"
+            dca     udcnt
+            tad     udaddr      /initialize to table of powers of ten
+            dca     udptr
+            isz     xudprnt     /index linkage for correct return
+udarnd,     tad i   udptr       /pick up current power of ten for
+            isz     udptr       /use in subtraction
+            dca     udhsub
+            tad i   udptr
+            isz     udptr
+            dca     udlsub
+uddo,       cll                 /double precision subtraction
+            tad     udlsub
+            tad     udlow
+            dca     udteml
+            ral
+            tad     udhsub
+            tad     udhigh
+            snl                 /did it underflow?
+            jmp     udout       /no, count is done
+            isz     udbox       /yes, count not done yet. index digit
+            dca     udhigh      /deposit remaining portions of word
+            tad     udteml
+            dca     udlow
+            jmp     uddo        /go back and subtract again
+udout,      cla
+            tad     udbox       /pick up resulting digit
+            tad     udtwo       /add "260" to it
+            tls                 /type it out
+            tsf
+            jmp     .-1
+            cla cll
+            dca     udbox       /initialize digit to "0"
+            isz     udcnt       /have we typed "8" digits
+            jmp     udarnd      /no, determine next digit
+            jmp i   xudprnt     /yes, subroutine done, return
+udloop,     -10                 /count of "8" digits
+udaddr,     udcon1              /initial address of powers of 10
+udtwo,      260                 /icode for digits
+udcnt,      0
+udhigh,     0
+udlow,      0
+udhsub,     0
+udlsub,     0
+udbox,      0
+udteml,     0
+udget,      0
+udptr,      0
+udcon1,     3166                /powers of 10
+            4600                /-10,000,000
+            7413                /-1,000,000
+            6700
+            7747                /-100,000
+            4540
+            7775                /-10,000
+            4360
+            7777                /-1,000
+            6030
+            7777                /-100
+            7634
+            7777                /-10
+            7766
+            7777                /-1
+            7777
+
+
+/ Add a random cell
+/ p(2)=0.9, p(4)=0.1
+/ all Cells equal probability
+/ pick a random cell, and walk from there until finding an empty
+/ one
+/ assumes that at least one cell is empty - else infinite loops
+K1777,      1777
+M146,       -146
+
+XRndCell,   0
+            / p(2) should be 0.9, p(4) should be 0.1
+            / we get a value 0-1023 and compare if in the first 1/10th
+            cla                     / default new value is log(2)
+            tad     K1
+            dca     rcrndval
+            jms i   GetRand
+            and     K1777           / value now 0-1023 decimal
+            tad     M146            / sub 102 decimal
+            spa                     / was in range 103-1023?
+            isz     rcrndval        / no, increment rand deposit
+            nop
+            
+            / have our random new value of log(2) or log(4); now find a 
+            / random cell in which to put it
+                                    / pick a random cell
+            jms i   GetRand         / get random number
+            and     B01111          / mask to 0-15
+            tad     Cells           / add to base address
+            dca     CPtr            / put it into index reg
+rcloop,     tad i   CPtr            / load mem using index reg
+            sna                     / skip if non-zero
+            jmp     HaveRC          / found an empty cell
+            cla                     / get index addr
+            tad     CPtr            / have we gone off the end?
+            and     CMask           / leave bottom four bits
+            sna                     / skip if yes
+            jmp     rcloop          / no, go try another
+            cla                     / yes, start at start of array
+            tad     Cells
+            dca     CPtr
+            jmp     rcloop          
+            
+            
+            
+HaveRC,     cla
+            tad     CPtr            / get copy of addr
+            dca     rcaddr          / save copy of addr
+            tad     rcrndval        / load new cell value
+            dca i   rcaddr
+            jmp i   XRndCell                            
+
+K1,         1
+K2,         2
+rcrndval,   1
+B01111,     17                
+CMask,      7740        / Is this right?
+rcaddr,     0
+
+                
+/ Clear Cells
+/ Simply clear out all Cells for the next game
+/ It seems that there should be a shorter way to do this by using the
+/ index register as both the index and loop variable, but I haven't found
+/ it yet.
+XClrTab,    0
+            cla
+            tad     CellCnt         / set loop count
+            dca     CellLoopI       /
+            tad     Cells           / get addr of table - 1
+            dca     CPtr            / save to index register
+xccloop,    dca i   CPtr         
+            isz     CellLoopI
+            jmp     xccloop
+            jmp i   XClrTab
+            
+
+
+*2400
+/ Print a NUL-terminated string of words containing 6-bit characters
+/ (as created by "TEXT" directive)
+/ NUL appears in final halfword, lo or hi
+XPrtWords,  0                   / Expects address of output string in AC
+            cma iac             / Decrement AC to set up for index
+            cma
+            dca     Ptr         / Save in index register
+XPWloop,    cla
+	        tad I	Ptr         / Get next word
+	        dca	    Tmp         / Keep AC for next char
+	        tad	    Tmp         / Reload AC
+	        bsw                 / Get high halfword into low
+	        jms	    XPrtHWord   / Print the original hi halfword
+	        tad	    Tmp         / Restore original input
+	        jms	    XPrtHword   / Go print the original lo halfword 
+	        jmp	    XPWloop     / Loop until we get a NUL halfword
+Tmp,	    0
+XPrtHWord,  0
+	        and	    K77         / Mask off low word
+            sna                 / NUL?
+            jmp i   XPrtWords   / Yes, done, return now
+	        dca	    PTmp        / No, preserve value
+	        tad	    PTmp        /
+                                / Convert 6-bit char:
+	        and	    K40         / Keep hi bit of the 6
+	        sna cla             / Set?
+	        tad	    K100        / Yes, turn on hi bit of 7-bit char
+	        tad	    PTmp        / Add orig char back
+            jms i   Putch       / print it
+	        jmp i   XPrtHWord
+K77,        77
+K40,        40
+K100,       100
+PTmp,       0
+
+
+*2600
+/ --- Routines to print out messages and banners
+
+/ input:  none
+/ output: AC=0
+XWelcome,   0                       / Print welcome banner
+            cla
+            jms     XStars          / Print star line
+            jms     XSpaces         / Print space line
+            tad     [WelcLine]      / Print "Welcome" line
+            jms i   PrtWords
+            jms i   Newline
+            tad     [KeysLine]      / Print key help line 1
+            jms i   PrtWords
+            jms i   Newline
+            tad     [OKysLine]      / Print key help line 2
+            jms i   PrtWords
+            jms i   Newline
+            jms     XSpaces         / Space line
+            jms     XStars          / Star line
+            jms i   Newline         / Blank line
+            jms     KeyCont         / Get a key press to seed PRNG
+            jmp i   XWelcome        / Return
+
+/ input:  AC=0
+/ output: AC=0
+XSpaces,    0                       / Print box line of spaces
+            tad     [SpcLine]
+            jms i   PrtWords
+            jms i   Newline
+            jmp i   XSpaces
+
+
+/ input:  AC=0
+/ output: AC=0
+XStars,     0                       / Print box line of starts
+            cla
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            jmp i   XStarses
+
+/ Get a key to continue, seeding the PRNG at the same time
+/ input: none
+/ output: AC=0
+KeyCont,    0
+            cla                     / Print "New Game" message
+            tad     [NewGmMsg]
+            jms i   PrtWords
+            jms i   GetchE
+            jms i   Newline
+            jmp i   KeyCont
+NewGmMsg,   text "PLEASE PRESS ENTER FOR NEW GAME:"
+     
+/ Print "Game Over" message
+/ input: none
+/ output: AC=0 
+GmOvMsg,    0        
+            cla
+            jms i   Newline
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            cla
+            tad     [GmOvrLn]
+            jms i   PrtWords
+            jms i   Newline
+            cla
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            jms i   Newline
+            jmp i   GmOvMsg
+            
+            
+/ Print "Winner" message
+/ Proceed through check-for-new-hi-score and then start
+/ a new game
+/ N.B. Not a callable subroutine!
+XWinner,    cla
+            jms i   Newline
+            jms i   Newline
+            jms i   Newline
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            tad     [WinLn]
+            jms i   PrtWords
+            jms i   Newline
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            tad     [StarLine]
+            jms i   PrtWords
+            jms i   Newline
+            jms i   Newline
+            jmp i   (CkHiScr)           / continue with hi-score check
+
+/ Print "New High Score" message
+/ input: none
+/ output: AC=0 
+HiScMsg,    0        
+            cla
+            tad     [HiScrMsg]
+            jms i   PrtWords
+            jms i   Newline
+            jms i   Newline
+            jmp i   HiScMsg
+HiScrMsg,	text "NEW HIGH SCORE!"
+*3000
+/ Text lines (Six-bit characters, two per word)
+StarLine,	text "***********************************"
+WelcLine,	text "* WELCOME TO 2048 ON THE SBC6120! *"
+KeysLine,	text "*  H=LEFT  J=DOWN  K=UP  L=RIGHT  *"
+OKysLine,	text "*  N=NEW GAME   Q=QUIT (HALT CPU) *"
+SpcLine,    text "*                                 *"
+GmOvrLn,	text "* * * * G A M E   O V E R ! * * * *"
+WinLn,	    text "*  CONGRATULATIONS!!!  WINNER!!!  *"
+
+
+/ here we encode the checks needed to evaluate a move for legality
+/ each set of four is the addresses of cells in a logical row or 
+/ column, opposite direction of move
+/  (i.e. if moving right to left, we look from left to right)
+
+LtRows,     .
+            Cell00
+            Cell01
+            Cell02
+            Cell03
+            Cell10
+            Cell11
+            Cell12
+            Cell13
+            Cell20
+            Cell21
+            Cell22
+            Cell23
+            Cell30
+            Cell31
+            Cell32
+            Cell33
+RtRows,     .
+            Cell03
+            Cell02
+            Cell01
+            Cell00
+            Cell13
+            Cell12
+            Cell11
+            Cell10
+            Cell23
+            Cell22
+            Cell21
+            Cell20
+            Cell33
+            Cell32
+            Cell31
+            Cell30
+UpRows,     .
+            Cell00
+            Cell10
+            Cell20
+            Cell30
+            Cell01
+            Cell11
+            Cell21
+            Cell31
+            Cell02
+            Cell12
+            Cell22
+            Cell32
+            Cell03
+            Cell13
+            Cell23
+            Cell33
+DnRows,     .
+            Cell30
+            Cell20
+            Cell10
+            Cell00
+            Cell31
+            Cell21
+            Cell11
+            Cell01
+            Cell32
+            Cell22
+            Cell12
+            Cell02
+            Cell33
+            Cell23
+            Cell13
+            Cell03
+                
+/-------------------- Page 0 -------------------/
+*10             / autoincrement index register set
+PTR,            0                   / general purpose pointer
+CPtr,           0                   / used as index into game table
+
+*20
+/ The game grid
+/ This is really not easily relocatable due to bit manipulations
+/ being done on addresses
+/ Must be at a zero-page address which is a multiple of 20 octal/
+/ Cells stored in four rows (Cell<x><y>)
+Cell00,     12
+Cell01,     12
+Cell02,     12
+Cell03,     12
+Cell10,     0
+Cell11,     0
+Cell12,     jmp i          (Main)        / Address 026 is boot entry point
+Cell13,     0
+Cell20,     0
+Cell21,     0
+Cell22,     0
+Cell23,     0
+Cell30,     0
+Cell31,     0
+Cell32,     0
+Cell33,     0
+
+Cells,      Cell00-1        / Address of cell array minus 1
+CellCnt,    -20             / Loop initializer for array
+CellLoopI,  0               / Variable for looping over array
+CMoved,     0               / flag if cell got moved
+CAdded,     0               / flag if cell got added
+
+From,       0               / Variables for lame memcopy routine
+To,         0
+
+/ Doublewords to hold scores since they may exceed 12 bits
+Score,      DUBL 0          / Score for current game
+HiScore,    DUBL 0          / High score this session
+
+RandSeed,   0               / Previous PRNG value; seed here
+
+/------ Longjump indirect vectors for routines ------/
+Getch,      XGetch
+GetchE,     XGetcE
+Putch,      XPutch
+Newline,    XNewline
+PrtWords,   XPrtWords
+DecPrt,     XDecPrt
+UDPrnt,     XUDPrnt
+GetRand,    XGetRand
+PrtTab,     XPrtTab
+RndCell,    XRndCell
+Welcome,    XWelcome
+ClrTab,     XClrTab
+SvTab,      XSvTab
+RstTab,     XRstTab
+CkGmOver,   XCkGmOver
+SvScr,      XSvScr
+RstScr,     XRstScr
+MemCpy,     XMemCpy
+MLt,        XMLt
+MRt,        XMRt
+MDn,        XMDn
+MUp,        XMUp
+ALt,        XALt
+ARt,        XARt
+ADn,        XADn
+AUp,        XAUp
+CLt,        XCLt
+CRt,        XCRt
+CDn,        XCDn
+CUp,        XCUp
+ATab,       XATab
+ARow,       XARow
+ACell,      XACell
+CTab,       XCTab
+CRow,       XCRow
+CCell,      XCCell
+DoScore,    XDoScore
+CheckWin,   XCkWin
+Winner,     XWinner
+$
