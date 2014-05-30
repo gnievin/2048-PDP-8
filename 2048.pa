@@ -107,7 +107,7 @@ KeyLoop,    jms i   RndCell         / Add random cell
             jms i   SvTab           / preserve table
             jms i   CkGmOver        / AC = 0 means game over
             sna                     / Is a move possible?
-            jmp     GameOver        / No, game is over
+            jmp i   [GameOver]      / No, game is over
             jms i   RstScr          / Yes, recover, restore score
             jms i   RstTab          / Restore table
 / Only loop back to here on invalid input            
@@ -155,7 +155,7 @@ ckN,        cla                     / Check for N key
             tad     NN 
             sza                     / N = New game?
             jmp     ckQ             / No, check next key
-            jmp     NewGame         / Yes, Start new game
+            jmp i   (NewGame)       / Yes, Start new game
 ckQ,        cla                     / Check for Q key
             tad     MyKey
             tad     NQ 
@@ -166,44 +166,86 @@ ckQ,        cla                     / Check for Q key
 CntKeyLoop, jms i   Newline
             jmp     KeyLoop
 
-NH,         -110                    / Negative 'H'
-NJ,         -112                    / Negative 'J'
-NK,         -113                    / Negative 'K'
-NL,         -114                    / Negative 'L'
-NN,         -116                    / Negative 'N'
-NQ,         -121                    / Negative 'Q'
 MyKey,      0                       / Last key from teletype
 
+
+
+*4600
+SHS,        DUBL 0
+SS,         DUBL 0
+
 / Come here when no more valid moves exist
-GameOver,   jms i   (GmOvMsg)       / Print "game over" message
-CkHiScr,    cla                     / New high score?
+GameOver,   jms i   [GmOvMsg]       / Print "game over" message
+/ this is broken - need to do proper double precision compare
+/ Unsigned
+CkHiScr,
+            cla                     / Save  hi score
+            tad     HiScore+1
+            dca     SHS+1
+            tad     HiScore
+            dca     SHS
+            tad     Score+1         / Save current score
+            dca     SS+1
+            tad     Score
+            dca     SS
+
+            cla cll                 / shift hi bit of low word to hi word
+            tad     Score+1         / of Score       
+            ral  
+            cla              
+            tad     Score
+            ral
+            dca     Score
+
+            cla cll                 / shift hi bit of low word to hi word
+            tad     HiScore+1       / of HiScore
+            ral
+            cla
+            tad     HiScore
+            ral
+            dca     HiScore
+            
+            tad     Score+1         / Lose hi bit of low word
+            and     (3777)
+            dca     Score+1
+            tad     HiScore+1       / Lose hi bit of low word
+            and     (3777)
+            dca     HiScore+1
+            
+            / Compare high words first                       
+            / this depends on scores overflowing 2^22rd power
+            / we can get away with doing a signed compare since
+            / hi bit will always be zero
+            cla cll
             tad     Score           / Compare high word
             cia
             tad     HiScore
-            sna                     / Is high word of score > hiscore?
-            jmp     NoHiSc          / Lower, no new hi score
-            sza
-            jmp     HiSc            / Higher, high score
-            cla                     / Equal, check low word                     
-            tad     Score+1
+            spa                     / Is high word of score > hiscore?
+            jmp     HiSc            / Yes, higher, new high score
+            sza                     / No; are words equal?
+            jmp     NoHiSc          / No, lower, no high score
+            tad     Score+1         / Yes, equal, check low word            
             cia
-            tad     HiScore+1       / Low word of score > hiscore?
-            sna 
-NoHiSc,     jmp     NewGame         / Here on no new high score
-HiSc,       jms i   (HiScMsg)       / New high score
-            cla                     / Print message
-            tad     Score           / Copy score to hi score
-            dca     HiScore
-            tad     Score+1
+            tad     HiScore+1       / Compare score > hiscore?
+            spa sza                 / Score (lo) > HiScore (lo)?
+            jmp     HiSc            / Yes, set high score
+NoHiSc,     cla                     / Here on no new hi score
+            tad     SHS             / Here on no new hi score
+            dca     HiScore         / Restore saved hi score
+            tad     SHS+1
             dca     HiScore+1
-NewGame,    jms i   (KeyCont)       / hit enter to continue & seed PRNG
-            jmp     Start           / start new game
+            jmp     NewGame
+HiSc,       jms i   (HiScMsg)       / New high score - print msg
+            cla                     / Set new high score
+            tad     SS+1
+            dca     HiScore+1
+            tad     SS
+            dca     HiScore
+NewGame,    jms i   (KeyCont)       / Hit enter to continue & seed PRNG
+            jmp i   (Start)         / Start new game
 
 
 *400
-/ New game - stub to start over
-/ Print the 4X4 game grid
-
 / Print a cell and a tab character
 / cell holds log2 of actual value - so cells can go above
 / 2048 IF this routine gets updated to use a double precision
@@ -265,6 +307,7 @@ XPrtTab,    0
             jms     XPrtScr
             jmp i   XPrtTab         / return
 XPTCPtr,    0
+
 / Print score line
 / input: none
 / output: AC=0
@@ -325,11 +368,9 @@ MCloop,     tad i   CPtr
             dca     STPtr
             jmp i   XMemCpy
 STCPtr,     0
-STPtr,      0    
-/ Save copy of the table
-/ input: none
-/ output: none
+STPtr,      0  
 *600
+
 / we will store the backup table here
 BUTab,      .
 *.+20                           / reserve 20 octal words
@@ -458,7 +499,6 @@ XMDn,       0
             jmp i   XMDn            / return zero on nomove           
 
 *1000
-
 / Routines to collapse rows (remove leading empties) in 
 / respective directions.
 / Input: none
@@ -494,7 +534,6 @@ XCDn,       0
 XCTab,      0 
             dca     CPtr
             dca     CMoved          / zero "did anything move" flag
-///// is this the right place for this?
             jms i   CRow
             jms i   CRow
             jms i   CRow
@@ -846,11 +885,9 @@ DIGIT,      0
 CNTRZB,     0
 SigDigt,    0
 space,      240
-
-            
+           
 
 *2000
-
 / input: AC = character
 / ouput: AC = 0
 XPutch,     0       
@@ -1344,10 +1381,17 @@ From,       0               / Variables for lame memcopy routine
 To,         0
 
 / Doublewords to hold scores since they may exceed 12 bits
-Score,      DUBL 0          / Score for current game
+Score,      DUBL 99999          / Score for current game
 HiScore,    DUBL 0          / High score this session
 
 RandSeed,   0               / Previous PRNG value; seed here
+
+NH,         -110                    / Negative 'H'
+NJ,         -112                    / Negative 'J'
+NK,         -113                    / Negative 'K'
+NL,         -114                    / Negative 'L'
+NN,         -116                    / Negative 'N'
+NQ,         -121                    / Negative 'Q'
 
 /------ Longjump indirect vectors for routines ------/
 Getch,      XGetch
