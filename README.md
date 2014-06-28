@@ -103,6 +103,6 @@ Execute/debug:
 
 Spare Time Gizmos SBC-6120/FP-6120, front-panel switches and blinkenlights
 
-http://sparetimegizmos.com/Hardware/SBC6120-2.htm
+http://sparetimegizmos.com/Hardware/SBC6120-1.htm
 
 http://sparetimegizmos.com/Hardware/SBC6120_Front_Panel.htm
