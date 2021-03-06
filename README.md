@@ -19,11 +19,21 @@ I've since verified that it runs in the SIMH PDP-8 simulator
 
 http://simh.trailing-edge.com/
 
-To run in SIMH: (on Debian-based Linux like Ubuntu or Mint)
+To run in SIMH: 
+
+(on Debian-based Linux like Ubuntu or Mint)
 
 apt-get install simh
 
 $ pdp8
+
+
+(on Fedora Linux)
+
+dnf install simh
+
+$ simh-pdp8
+
 
 sim> LOAD 2048.bin
 
